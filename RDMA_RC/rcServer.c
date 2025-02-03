@@ -769,7 +769,7 @@ static inline int completion(struct rc_context *ctx, int *scnt,
 			status, (int) wr_id);
 		return 1;
 	}
-
+	printf("123\n");
     switch ((int) wr_id){
         case SEND_WR_ID :
         	printf("SUCCESSFUL SEND DATA\n");
