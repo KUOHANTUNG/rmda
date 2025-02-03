@@ -1,34 +1,3 @@
-/*
- * Copyright (c) 2005 Topspin Communications.  All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * OpenIB.org BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -446,7 +415,68 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 		fprintf(stderr, "Couldn't allocate PD\n");
 		goto clean_comp_channel;
 	}
-	ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, size, access_flags);
+	/**check expanded function */
+	if (use_odp || use_ts || use_dm) {
+		const uint32_t rc_caps_mask = IBV_ODP_SUPPORT_SEND |
+					      IBV_ODP_SUPPORT_RECV;
+		struct ibv_device_attr_ex attrx;
+
+		if (ibv_query_device_ex(ctx->context, NULL, &attrx)) {
+			fprintf(stderr, "Couldn't query device for its features\n");
+			goto clean_pd;
+		}
+
+		if (use_odp) {
+			if (!(attrx.odp_caps.general_caps & IBV_ODP_SUPPORT) ||
+			    (attrx.odp_caps.per_transport_caps.rc_odp_caps & rc_caps_mask) != rc_caps_mask) {
+				fprintf(stderr, "The device isn't ODP capable or does not support RC send and receive with ODP\n");
+				goto clean_pd;
+			}
+			if (implicit_odp &&
+			    !(attrx.odp_caps.general_caps & IBV_ODP_SUPPORT_IMPLICIT)) {
+				fprintf(stderr, "The device doesn't support implicit ODP\n");
+				goto clean_pd;
+			}
+			access_flags |= IBV_ACCESS_ON_DEMAND;
+		}
+
+		if (use_ts) {
+			if (!attrx.completion_timestamp_mask) {
+				fprintf(stderr, "The device isn't completion timestamp capable\n");
+				goto clean_pd;
+			}
+			ctx->completion_timestamp_mask = attrx.completion_timestamp_mask;
+		}
+
+		if (use_dm) {
+			struct ibv_alloc_dm_attr dm_attr = {};
+
+			if (!attrx.max_dm_size) {
+				fprintf(stderr, "Device doesn't support dm allocation\n");
+				goto clean_pd;
+			}
+
+			if (attrx.max_dm_size < size) {
+				fprintf(stderr, "Device memory is insufficient\n");
+				goto clean_pd;
+			}
+
+			dm_attr.length = size;
+			ctx->dm = ibv_alloc_dm(ctx->context, &dm_attr);
+			if (!ctx->dm) {
+				fprintf(stderr, "Dev mem allocation failed\n");
+				goto clean_pd;
+			}
+
+			access_flags |= IBV_ACCESS_ZERO_BASED;
+		}
+	}
+	if (implicit_odp) {
+		ctx->mr = ibv_reg_mr(ctx->pd, NULL, SIZE_MAX, access_flags);
+	}else
+		ctx->mr = use_dm ? ibv_reg_dm_mr(ctx->pd, ctx->dm, 0,
+						 size, access_flags)
+		: ibv_reg_mr(ctx->pd, ctx->buf, size, access_flags);
 	if (!ctx->mr) {
 		fprintf(stderr, "Couldn't register mr_read_write\n");
 		goto clean_pd;
@@ -461,8 +491,38 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 		fprintf(stderr, "Couldn't register msg_mr_recv\n");
 		goto clean_msg_mr_send;
 	}
-    ctx->cq_s.cq = ibv_create_cq(ctx->context, rx_depth + 1, NULL,
-    ctx->channel, 0);
+
+	if (prefetch_mr) {
+		struct ibv_sge sg_list;
+		int ret;
+
+		sg_list.lkey = ctx->mr->lkey;
+		sg_list.addr = (uintptr_t)ctx->buf;
+		sg_list.length = size;
+
+		ret = ibv_advise_mr(ctx->pd, IBV_ADVISE_MR_ADVICE_PREFETCH_WRITE,
+				    IB_UVERBS_ADVISE_MR_FLAG_FLUSH,
+				    &sg_list, 1);
+
+		if (ret)
+			fprintf(stderr, "Couldn't prefetch MR(%d). Continue anyway\n", ret);
+	}
+
+    if (use_ts) {
+		struct ibv_cq_init_attr_ex attr_ex = {
+			.cqe = rx_depth + 1,
+			.cq_context = NULL,
+			.channel = ctx->channel,
+			.comp_vector = 0,
+			.wc_flags = IBV_WC_EX_WITH_COMPLETION_TIMESTAMP
+		};
+
+		ctx->cq_s.cq_ex = ibv_create_cq_ex(ctx->context, &attr_ex);
+	} else {
+		ctx->cq_s.cq = ibv_create_cq(ctx->context, rx_depth + 1, NULL,
+					     ctx->channel, 0);
+	}
+
 	if (!cq(ctx)) {
 		fprintf(stderr, "Couldn't create CQ\n");
 		goto clean_msg_mr_recv;
@@ -539,10 +599,6 @@ clean_comp_channel:
 
 clean_device:
 	ibv_close_device(ctx->context);
-
-clean_buffer:
-	free(ctx->buf);
-
 clean_msg_buf_send:
 	free(ctx->msg_buf_send);
 
@@ -626,7 +682,7 @@ static int post_recv(struct rc_context *ctx,
 
  /*RECV BUFFER*/
     struct ibv_sge list = {
-		.addr	= (uintptr_t) addr,
+		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
@@ -657,7 +713,7 @@ static int post_send(struct rc_context *ctx,
 		)
 {
 	struct ibv_sge list = {
-		.addr	= (uintptr_t) addr,
+		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
@@ -668,14 +724,29 @@ static int post_send(struct rc_context *ctx,
 		.opcode     = opcode,
 		.send_flags = (unsigned int)ctx->send_flags,
 	};
-	struct ibv_send_wr *bad_wr;
-	if(opcode != IBV_WR_SEND){
-		wr.wr.rdma.remote_addr = (uintptr_t)ctx->msg_buf_recv->mr.addr;
-		wr.wr.rdma.rkey = ctx->msg_buf_recv->mr.rkey;
-	}
-	return ibv_post_send(ctx->qp, &wr, &bad_wr);
-}
 
+	struct ibv_send_wr *bad_wr;
+	/**new wr api, it's said that may be quicker */
+	if (use_new_send&&opcode!=IBV_WR_SEND) {
+		ibv_wr_start(ctx->qpx);
+
+		ctx->qpx->wr_id = opcode;
+		ctx->qpx->wr_flags = ctx->send_flags;
+		if(opcode == IBV_WR_RDMA_WRITE)
+			ibv_wr_rdma_write(ctx->qpx,ctx->msg_buf_recv->mr.rkey, ctx->msg_buf_recv->mr.rkey);
+		if(opcode == IBV_WR_RDMA_READ)
+			ibv_wr_rdma_read(ctx->qpx,ctx->msg_buf_recv->mr.rkey, ctx->msg_buf_recv->mr.rkey);
+		ibv_wr_set_sge(ctx->qpx, list.lkey, list.addr, list.length);
+		return ibv_wr_complete(ctx->qpx);
+	} else {
+		if(opcode != IBV_WR_SEND){
+			wr.wr.rdma.remote_addr = (uintptr_t)ctx->msg_buf_recv->mr.addr;
+			wr.wr.rdma.rkey = ctx->msg_buf_recv->mr.rkey;
+		}
+		return ibv_post_send(ctx->qp, &wr, &bad_wr);
+	}
+
+}
 struct ts_params {
 	uint64_t		 comp_recv_max_time_delta;
 	uint64_t		 comp_recv_min_time_delta;
@@ -684,6 +755,113 @@ struct ts_params {
 	int			 last_comp_with_ts;
 	unsigned int		 comp_with_time_iters;
 };
+/**
+ * timestamp function
+ */
+static inline int completion(struct rc_context *ctx, int *scnt,
+				  uint64_t wr_id, enum ibv_wc_status status,
+				  uint64_t completion_timestamp,
+				  char *servername,
+				  struct ts_params *ts){
+	if (status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Failed status %s (%d) for wr_id %d\n",
+			ibv_wc_status_str(status),
+			status, (int) wr_id);
+		return 1;
+	}
+
+    switch ((int) wr_id){
+        case SEND_WR_ID :
+        	printf("SUCCESSFUL SEND DATA\n");
+            break;
+        case RECV_WR_ID :						
+        	printf("RECEIVED DATA FROM REMOTE: %s\n", ctx->msg_buf_recv->txt);
+            if(!scnt){
+                pid_t pid = getpid();
+				sprintf(ctx->msg_buf_send->txt,
+					"HELLO,I am server %d, my_remote_key: %d and mem_address: %p\n", 
+					pid, 
+					ctx->mr->rkey,
+					ctx->mr->addr
+				);
+				memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));
+				if (post_send(ctx, IBV_WR_SEND,
+					ctx->msg_buf_send,sizeof(struct message),
+					ctx->msg_mr_send->lkey,
+					SEND_WR_ID
+				)) {
+					fprintf(stderr, "Couldn't post send\n");
+					return 1;
+				}
+                scnt++;//client has sent  
+            }
+
+			if(servername){
+				if(post_send(ctx,IBV_WR_RDMA_READ,
+					ctx->buf,ctx->size,
+					ctx->mr->lkey,READ_WR_ID)){
+					fprintf(stderr, "Couldn't post WRITE_WR\n");
+					return 1;
+				}
+			}
+			if (ts->last_comp_with_ts) {
+				uint64_t delta;
+
+				/* checking whether the clock was wrapped around */
+				if (completion_timestamp >= ts->comp_recv_prev_time)
+					delta = completion_timestamp - ts->comp_recv_prev_time;
+				else
+					delta = ctx->completion_timestamp_mask - ts->comp_recv_prev_time +
+						completion_timestamp + 1;
+
+				ts->comp_recv_max_time_delta = max(ts->comp_recv_max_time_delta, delta);
+				ts->comp_recv_min_time_delta = min(ts->comp_recv_min_time_delta, delta);
+				ts->comp_recv_total_time_delta += delta;
+				ts->comp_with_time_iters++;
+			}
+			ts->comp_recv_prev_time = completion_timestamp;
+			ts->last_comp_with_ts = 1;
+            break;
+			case READ_WR_ID:
+				printf("....the server buffer content:%s\n", ctx->buf);
+				sprintf(ctx->buf,"hello,server! i have change your data time: 0000\n");
+				if(post_send(ctx,IBV_WR_RDMA_WRITE,
+					ctx->buf,ctx->size,
+					ctx->mr->lkey,WRITE_WR_ID)){
+					fprintf(stderr, "Couldn't post WRITE_WR\n");
+					return 1;
+				}
+				if (ts->last_comp_with_ts) {
+				uint64_t delta;
+
+				/* checking whether the clock was wrapped around */
+				if (completion_timestamp >= ts->comp_recv_prev_time)
+					delta = completion_timestamp - ts->comp_recv_prev_time;
+				else
+					delta = ctx->completion_timestamp_mask - ts->comp_recv_prev_time +
+						completion_timestamp + 1;
+
+				ts->comp_recv_max_time_delta = max(ts->comp_recv_max_time_delta, delta);
+				ts->comp_recv_min_time_delta = min(ts->comp_recv_min_time_delta, delta);
+				ts->comp_recv_total_time_delta += delta;
+				ts->comp_with_time_iters++;
+				}
+				ts->comp_recv_prev_time = completion_timestamp;
+				ts->last_comp_with_ts = 1;
+				break;
+				case WRITE_WR_ID:
+					printf("SUCCESSFUL CHANGE DATA\n");
+					break;
+                default:
+                    fprintf(stderr, "Completion for unknown wr_id %d\n",
+					(int) wr_id);
+					return 1;
+                    break;
+    }
+	return 0;
+}
+
+
 
 
 static void usage(const char *argv0)
@@ -860,24 +1038,25 @@ int main(int argc, char *argv[])
 		usage(argv[0]);
 		return 1;
 	}
-	// if (use_odp && use_dm) {
-	// 	fprintf(stderr, "DM memory region can't be on demand\n");
-	// 	return 1;
-	// }
+	/**DOP rely on host memory */
+	if (use_odp && use_dm) {
+		fprintf(stderr, "DM memory region can't be on demand\n");
+		return 1;
+	}
+	/* prefetch needs help of odp*/
+	if (!use_odp && prefetch_mr) {
+		fprintf(stderr, "prefetch is valid only with on-demand memory region\n");
+		return 1;
+	}
 
-	// if (!use_odp && prefetch_mr) {
-	// 	fprintf(stderr, "prefetch is valid only with on-demand memory region\n");
-	// 	return 1;
-	// }
-
-	// if (use_ts) {
-	// 	ts.comp_recv_max_time_delta = 0;
-	// 	ts.comp_recv_min_time_delta = 0xffffffff;
-	// 	ts.comp_recv_total_time_delta = 0;
-	// 	ts.comp_recv_prev_time = 0;
-	// 	ts.last_comp_with_ts = 0;
-	// 	ts.comp_with_time_iters = 0;
-	// }
+	if (use_ts) {
+		ts.comp_recv_max_time_delta = 0;
+		ts.comp_recv_min_time_delta = 0xffffffff;
+		ts.comp_recv_total_time_delta = 0;
+		ts.comp_recv_prev_time = 0;
+		ts.last_comp_with_ts = 0;
+		ts.comp_with_time_iters = 0;
+	}
 	page_size = sysconf(_SC_PAGESIZE);
 
 	dev_list = ibv_get_device_list(NULL);
@@ -974,6 +1153,7 @@ int main(int argc, char *argv[])
 			return 1;
 
 	if (servername) {
+
 		pid_t pid = getpid();
 		sprintf(ctx->msg_buf_send->txt,
 		"HELLO,I am client %d, my_remote_key: %d and mem_address: %p\n", 
@@ -998,7 +1178,11 @@ int main(int argc, char *argv[])
 	}
 	if(!servername){
 		sprintf(ctx->buf,"server start_time:%lx",start.tv_sec);
-
+		if (use_dm)
+			if (ibv_memcpy_to_dm(ctx->dm, 0, (void *)ctx->buf, size)) {
+				fprintf(stderr, "Copy to dm buffer failed\n");
+				return 1;
+			}
 	}
 	int w = 2;
 	if(servername){
@@ -1006,6 +1190,7 @@ int main(int argc, char *argv[])
 	}
 	for(int j =0; j<w;j++){
 		/*event driver*/
+	int ret;
     if(use_event){
         struct ibv_cq *ev_cq;
 		void          *ev_ctx;
@@ -1025,11 +1210,63 @@ int main(int argc, char *argv[])
 		}
 
     }
+		if (use_ts) {
+			struct ibv_poll_cq_attr attr = {};
+			/*high performance poll*/
+			do {
+				ret = ibv_start_poll(ctx->cq_s.cq_ex, &attr);
+			} while (!use_event && ret == ENOENT);
+
+			if (ret) {
+				fprintf(stderr, "poll CQ failed %d\n", ret);
+				return ret;
+			}
+			ret = completion(ctx, &scnt, 
+					      ctx->cq_s.cq_ex->wr_id,
+					      ctx->cq_s.cq_ex->status,
+					      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
+						  servername,
+					      &ts);
+			if (ret) {
+				ibv_end_poll(ctx->cq_s.cq_ex);
+				return ret;
+			}
+			ret = ibv_next_poll(ctx->cq_s.cq_ex);
+			if (!ret)
+				ret = completion(ctx, &scnt, 
+					      ctx->cq_s.cq_ex->wr_id,
+					      ctx->cq_s.cq_ex->status,
+					      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
+						  servername,
+					      &ts);
+			/*client has to loop two times more for read/send*/
+			if(servername){
+				for(int i=0;i<2;i++){
+					if (ret) {
+						ibv_end_poll(ctx->cq_s.cq_ex);
+						return ret;
+					}
+					ret = ibv_next_poll(ctx->cq_s.cq_ex);
+					if (!ret)
+					ret = completion(ctx, &scnt, 
+					      ctx->cq_s.cq_ex->wr_id,
+					      ctx->cq_s.cq_ex->status,
+					      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
+						  servername,
+					      &ts);
+				}
+			}
+			ibv_end_poll(ctx->cq_s.cq_ex);
+			if (ret && ret != ENOENT) {
+				fprintf(stderr, "poll CQ failed %d\n", ret);
+				return ret;
+			}
+		}else
     {
-        struct ibv_wc wc[1];
+        struct ibv_wc wc[2];
 		int ne;
         do {
-			ne = ibv_poll_cq(cq(ctx), 4, wc);
+			ne = ibv_poll_cq(cq(ctx), 2, wc);
 			if (ne < 0) {
 				fprintf(stderr, "poll CQ failed %d\n", ne);
 				return 1;
@@ -1105,10 +1342,24 @@ int main(int argc, char *argv[])
 
 	}
 	if(!servername){
+
 		printf("current server buff:%s\n", ctx->buf);
 		sleep(2);//edlay two minutes to wait client
+		if (use_dm)
+				if (ibv_memcpy_from_dm(ctx->buf, ctx->dm, 0, size)) {
+					fprintf(stderr, "Copy from DM buffer failed\n");
+					return 1;
+				}
 		printf("....the server buffer content:%s\n", ctx->buf);
 	}  
+	if (use_ts && ts.comp_with_time_iters) {
+			printf("Max receive completion clock cycles = %" PRIu64 "\n",
+			       ts.comp_recv_max_time_delta);
+			printf("Min receive completion clock cycles = %" PRIu64 "\n",
+			       ts.comp_recv_min_time_delta);
+			printf("Average receive completion clock cycles = %f\n",
+			       (double)ts.comp_recv_total_time_delta / ts.comp_with_time_iters);
+		}
     ibv_ack_cq_events(cq(ctx), num_cq_events);
     if (gettimeofday(&end, NULL)) {
 		perror("gettimeofday");
