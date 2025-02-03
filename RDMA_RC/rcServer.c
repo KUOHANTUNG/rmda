@@ -1247,12 +1247,11 @@ int main(int argc, char *argv[])
 						  servername,
 					      &ts);
 			if (ret) {
-				printf("something wrong state 1!\n");
+				printf("something wrong state %d!\n",ctx->cq_s.cq_ex->status);
 				ibv_end_poll(ctx->cq_s.cq_ex);
 				return ret;
 			}
-			ret = ibv_start_poll(ctx->cq_s.cq_ex, &attr);
-			
+			ret = ibv_next_poll(ctx->cq_s.cq_ex);			
 			if (!ret)
 				ret = completion(ctx, &scnt, 
 					      ctx->cq_s.cq_ex->wr_id,
