@@ -733,7 +733,7 @@ static int post_send(struct rc_context *ctx,
 		)
 {
 	struct ibv_sge list = {
-		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
+		.addr	= use_dm&&opcode!=IBV_WR_SEND? 0 :(uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
@@ -1204,7 +1204,7 @@ int main(int argc, char *argv[])
 				return 1;
 			}
 	}
-	int w = 2;
+	int w = 20;
 	if(servername){
 		w = 4;
 	}
@@ -1260,13 +1260,6 @@ int main(int argc, char *argv[])
 					      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
 						  servername,
 					      &ts);
-			else{
-				printf("something wrong state 2 status:%d !\n",
-				ctx->cq_s.cq_ex->status
-				);
-				ibv_end_poll(ctx->cq_s.cq_ex);
-				return ret;
-			}
 			/*client has to loop two times more for read/send*/
 			if(servername){
 				for(int i=0;i<2;i++){
