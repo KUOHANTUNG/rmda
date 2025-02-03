@@ -543,15 +543,34 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 		
 		/**decrease the effect of mfence which is used to make sure sequence of queue */
 
+		if (use_new_send) {
+			struct ibv_qp_init_attr_ex init_attr_ex = {};
+
+			init_attr_ex.send_cq = cq(ctx);
+			init_attr_ex.recv_cq = cq(ctx);
+			init_attr_ex.cap.max_send_wr = 1;
+			init_attr_ex.cap.max_recv_wr = rx_depth;
+			init_attr_ex.cap.max_send_sge = 1;
+			init_attr_ex.cap.max_recv_sge = 1;
+			init_attr_ex.qp_type = IBV_QPT_RC;
+
+			init_attr_ex.comp_mask |= IBV_QP_INIT_ATTR_PD |
+						  IBV_QP_INIT_ATTR_SEND_OPS_FLAGS;
+			init_attr_ex.pd = ctx->pd;
+			init_attr_ex.send_ops_flags = IBV_QP_EX_WITH_SEND;
+
+			ctx->qp = ibv_create_qp_ex(ctx->context, &init_attr_ex);
+		} else {
 			ctx->qp = ibv_create_qp(ctx->pd, &init_attr);
+		}
 
 		if (!ctx->qp)  {
 			fprintf(stderr, "Couldn't create QP\n");
 			goto clean_cq;
 		}
 
-		// if (use_new_send)
-		// 	ctx->qpx = ibv_qp_to_qp_ex(ctx->qp);//it doesnot need  to translate again
+		if (use_new_send)
+			ctx->qpx = ibv_qp_to_qp_ex(ctx->qp);//it doesnot need  to translate again
 
 		ibv_query_qp(ctx->qp, &attr, IBV_QP_CAP, &init_attr);
 		if (init_attr.cap.max_inline_data >= size && !use_dm)
@@ -1213,10 +1232,6 @@ int main(int argc, char *argv[])
 		if (use_ts) {
 			struct ibv_poll_cq_attr attr = {};
 			/*high performance poll*/
-			int lo_times =2;
-			if(servername)
-				lo_times = 4;
-			for(int i =0; i<lo_times; i++){
 			do {
 				ret = ibv_start_poll(ctx->cq_s.cq_ex, &attr);
 			} while (!use_event && ret == ENOENT);
@@ -1236,44 +1251,41 @@ int main(int argc, char *argv[])
 				ibv_end_poll(ctx->cq_s.cq_ex);
 				return ret;
 			}
+			ret = ibv_next_poll(ctx->cq_s.cq_ex);
+			if (!ret)
+				ret = completion(ctx, &scnt, 
+					      ctx->cq_s.cq_ex->wr_id,
+					      ctx->cq_s.cq_ex->status,
+					      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
+						  servername,
+					      &ts);
+			else{
+				printf("something wrong state 2!\n");
+				ibv_end_poll(ctx->cq_s.cq_ex);
+				return ret;
 			}
-			
-
-			// ret = ibv_next_poll(ctx->cq_s.cq_ex);
-			// if (!ret)
-			// 	ret = completion(ctx, &scnt, 
-			// 		      ctx->cq_s.cq_ex->wr_id,
-			// 		      ctx->cq_s.cq_ex->status,
-			// 		      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
-			// 			  servername,
-			// 		      &ts);
-			// else{
-			// 	printf("something wrong state 2!\n");
-			// 	ibv_end_poll(ctx->cq_s.cq_ex);
-			// 	return ret;
-			// }
-			// /*client has to loop two times more for read/send*/
-			// if(servername){
-			// 	for(int i=0;i<2;i++){
-			// 		if (ret) {
-			// 			ibv_end_poll(ctx->cq_s.cq_ex);
-			// 			return ret;
-			// 		}
-			// 		ret = ibv_next_poll(ctx->cq_s.cq_ex);
-			// 		if (!ret)
-			// 			ret = completion(ctx, &scnt, 
-			// 				ctx->cq_s.cq_ex->wr_id,
-			// 				ctx->cq_s.cq_ex->status,
-			// 				ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
-			// 				servername,
-			// 				&ts);
-			// 		else{
-			// 			printf("something wrong state 3+%d!\n",i);
-			// 			ibv_end_poll(ctx->cq_s.cq_ex);
-			// 			return ret;
-			// 		}
-			// 	}
-			// }
+			/*client has to loop two times more for read/send*/
+			if(servername){
+				for(int i=0;i<2;i++){
+					if (ret) {
+						ibv_end_poll(ctx->cq_s.cq_ex);
+						return ret;
+					}
+					ret = ibv_next_poll(ctx->cq_s.cq_ex);
+					if (!ret)
+						ret = completion(ctx, &scnt, 
+							ctx->cq_s.cq_ex->wr_id,
+							ctx->cq_s.cq_ex->status,
+							ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
+							servername,
+							&ts);
+					else{
+						printf("something wrong state 3+%d!\n",i);
+						ibv_end_poll(ctx->cq_s.cq_ex);
+						return ret;
+					}
+				}
+			}
 			ibv_end_poll(ctx->cq_s.cq_ex);
 			if (ret && ret != ENOENT) {
 				printf("something wrong end poll!\n");
