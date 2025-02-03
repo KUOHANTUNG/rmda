@@ -1228,11 +1228,12 @@ int main(int argc, char *argv[])
 						  servername,
 					      &ts);
 			if (ret) {
-				printf("something wrong!\n");
+				printf("something wrong state 1!\n");
 				ibv_end_poll(ctx->cq_s.cq_ex);
 				return ret;
 			}
 			ret = ibv_next_poll(ctx->cq_s.cq_ex);
+			
 			if (!ret)
 				ret = completion(ctx, &scnt, 
 					      ctx->cq_s.cq_ex->wr_id,
@@ -1240,6 +1241,11 @@ int main(int argc, char *argv[])
 					      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
 						  servername,
 					      &ts);
+			else{
+				printf("something wrong state 2!\n");
+				ibv_end_poll(ctx->cq_s.cq_ex);
+				return ret;
+			}
 			/*client has to loop two times more for read/send*/
 			if(servername){
 				for(int i=0;i<2;i++){
@@ -1249,16 +1255,22 @@ int main(int argc, char *argv[])
 					}
 					ret = ibv_next_poll(ctx->cq_s.cq_ex);
 					if (!ret)
-					ret = completion(ctx, &scnt, 
-					      ctx->cq_s.cq_ex->wr_id,
-					      ctx->cq_s.cq_ex->status,
-					      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
-						  servername,
-					      &ts);
+						ret = completion(ctx, &scnt, 
+							ctx->cq_s.cq_ex->wr_id,
+							ctx->cq_s.cq_ex->status,
+							ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
+							servername,
+							&ts);
+					else{
+						printf("something wrong state 3+%d!\n",i);
+						ibv_end_poll(ctx->cq_s.cq_ex);
+						return ret;
+					}
 				}
 			}
 			ibv_end_poll(ctx->cq_s.cq_ex);
 			if (ret && ret != ENOENT) {
+				printf("something wrong end poll!\n");
 				fprintf(stderr, "poll CQ failed %d\n", ret);
 				return ret;
 			}
