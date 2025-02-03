@@ -1228,6 +1228,7 @@ int main(int argc, char *argv[])
 						  servername,
 					      &ts);
 			if (ret) {
+				printf("something wrong!\n");
 				ibv_end_poll(ctx->cq_s.cq_ex);
 				return ret;
 			}
@@ -1261,84 +1262,83 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "poll CQ failed %d\n", ret);
 				return ret;
 			}
-		}else
-    {
-        struct ibv_wc wc[2];
-		int ne;
-        do {
-			ne = ibv_poll_cq(cq(ctx), 2, wc);
-			if (ne < 0) {
-				fprintf(stderr, "poll CQ failed %d\n", ne);
-				return 1;
-			}
-		} while (!use_event && ne < 1);
-        for(int i = 0; i < ne; i++){
-
-            if (wc[i].status != IBV_WC_SUCCESS) {
-				fprintf(stderr, "Failed status %s (%d) for wr_id %d\n",
-				ibv_wc_status_str(wc[i].status),
-				wc[i].status, (int) wc[i].wr_id);
-				return 1;
-			}
-
-            switch ((int) wc[i].wr_id){
-                case SEND_WR_ID :
-                    printf("SUCCESSFUL SEND DATA\n");
-                    break;
-                case RECV_WR_ID :						
-                    printf("RECEIVED DATA FROM REMOTE: %s\n", ctx->msg_buf_recv->txt);
-                    if(!scnt){
-                        pid_t pid = getpid();
-						sprintf(ctx->msg_buf_send->txt,
-								"HELLO,I am server %d, my_remote_key: %d and mem_address: %p\n", 
-								pid, 
-								ctx->mr->rkey,
-								ctx->mr->addr
-								);
-						memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));
-						if (post_send(ctx, IBV_WR_SEND,
-							ctx->msg_buf_send,sizeof(struct message),
-							ctx->msg_mr_send->lkey,
-							SEND_WR_ID
-							)) {
-							fprintf(stderr, "Couldn't post send\n");
-							return 1;
-						}
-                        scnt++;//client has sent  
-                    }
-
-					if(servername){
-
-						if(post_send(ctx,IBV_WR_RDMA_READ,
-						ctx->buf,size,
-						ctx->mr->lkey,READ_WR_ID)){
-							fprintf(stderr, "Couldn't post WRITE_WR\n");
-							return 1;
-						}
+		}else{
+        		struct ibv_wc wc[2];
+				int ne;
+				do {
+					ne = ibv_poll_cq(cq(ctx), 2, wc);
+					if (ne < 0) {
+						fprintf(stderr, "poll CQ failed %d\n", ne);
+						return 1;
 					}
-                    break;
-					case READ_WR_ID:
-						printf("....the server buffer content:%s\n", ctx->buf);
-						sprintf(ctx->buf,"hello,server! i have change your data time: 0000\n");
-						if(post_send(ctx,IBV_WR_RDMA_WRITE,
-							ctx->buf,size,
-							ctx->mr->lkey,WRITE_WR_ID)){
-								fprintf(stderr, "Couldn't post WRITE_WR\n");
-								return 1;
+				} while (!use_event && ne < 1);
+				for(int i = 0; i < ne; i++){
+
+					if (wc[i].status != IBV_WC_SUCCESS) {
+						fprintf(stderr, "Failed status %s (%d) for wr_id %d\n",
+						ibv_wc_status_str(wc[i].status),
+						wc[i].status, (int) wc[i].wr_id);
+						return 1;
+					}
+
+					switch ((int) wc[i].wr_id){
+						case SEND_WR_ID :
+							printf("SUCCESSFUL SEND DATA\n");
+							break;
+						case RECV_WR_ID :						
+							printf("RECEIVED DATA FROM REMOTE: %s\n", ctx->msg_buf_recv->txt);
+							if(!scnt){
+								pid_t pid = getpid();
+								sprintf(ctx->msg_buf_send->txt,
+										"HELLO,I am server %d, my_remote_key: %d and mem_address: %p\n", 
+										pid, 
+										ctx->mr->rkey,
+										ctx->mr->addr
+										);
+								memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));
+								if (post_send(ctx, IBV_WR_SEND,
+									ctx->msg_buf_send,sizeof(struct message),
+									ctx->msg_mr_send->lkey,
+									SEND_WR_ID
+									)) {
+									fprintf(stderr, "Couldn't post send\n");
+									return 1;
+								}
+								scnt++;//client has sent  
 							}
-						break;
-					case WRITE_WR_ID:
-						printf("SUCCESSFUL CHANGE DATA\n");
-						break;
-                default:
-                    fprintf(stderr, "Completion for unknown wr_id %d\n",
-					(int) wc[i].wr_id);
-					return 1;
-                    break;
-            }
-        }
+
+							if(servername){
+
+								if(post_send(ctx,IBV_WR_RDMA_READ,
+								ctx->buf,size,
+								ctx->mr->lkey,READ_WR_ID)){
+									fprintf(stderr, "Couldn't post WRITE_WR\n");
+									return 1;
+								}
+							}
+							break;
+							case READ_WR_ID:
+								printf("....the server buffer content:%s\n", ctx->buf);
+								sprintf(ctx->buf,"hello,server! i have change your data time: 0000\n");
+								if(post_send(ctx,IBV_WR_RDMA_WRITE,
+									ctx->buf,size,
+									ctx->mr->lkey,WRITE_WR_ID)){
+										fprintf(stderr, "Couldn't post WRITE_WR\n");
+										return 1;
+									}
+								break;
+							case WRITE_WR_ID:
+								printf("SUCCESSFUL CHANGE DATA\n");
+								break;
+						default:
+							fprintf(stderr, "Completion for unknown wr_id %d\n",
+							(int) wc[i].wr_id);
+							return 1;
+							break;
+					}
+				}
             
-    }
+    	}
 
 	}
 	if(!servername){
