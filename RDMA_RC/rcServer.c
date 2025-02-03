@@ -214,7 +214,8 @@ static struct rc_dest *client_exch_dest(const char *servername, int port,
 			sockfd = -1;
 		}
 	}
-
+	freeaddrinfo(res);
+	free(service);
     if (sockfd < 0) {
 		fprintf(stderr, "Couldn't connect to %s:%d\n", servername, port);
 		return NULL;
@@ -582,7 +583,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 			.qp_state        = IBV_QPS_INIT,
 			.pkey_index      = 0,
 			.port_num        = (uint8_t) port,
-			.qp_access_flags = 0
+			.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE
 		};
 
 		if (ibv_modify_qp(ctx->qp, &attr,
