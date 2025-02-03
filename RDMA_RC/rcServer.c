@@ -582,7 +582,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 			.qp_state        = IBV_QPS_INIT,
 			.pkey_index      = 0,
 			.port_num        = (uint8_t) port,
-			.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE
+			.qp_access_flags = 0
 		};
 
 		if (ibv_modify_qp(ctx->qp, &attr,
