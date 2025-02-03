@@ -1251,7 +1251,8 @@ int main(int argc, char *argv[])
 				ibv_end_poll(ctx->cq_s.cq_ex);
 				return ret;
 			}
-			ret = ibv_next_poll(ctx->cq_s.cq_ex);
+			ret = ibv_start_poll(ctx->cq_s.cq_ex, &attr);
+			
 			if (!ret)
 				ret = completion(ctx, &scnt, 
 					      ctx->cq_s.cq_ex->wr_id,
