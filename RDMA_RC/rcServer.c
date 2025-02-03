@@ -801,7 +801,6 @@ static inline int completion(struct rc_context *ctx, int *scnt,
 					ctx->buf,ctx->size,
 					ctx->mr->lkey,READ_WR_ID)){
 					fprintf(stderr, "Couldn't post WRITE_WR\n");
-					printf("i am here\n");
 					return 1;
 				}
 			}
@@ -1234,7 +1233,7 @@ int main(int argc, char *argv[])
 				return ret;
 			}
 			ret = ibv_next_poll(ctx->cq_s.cq_ex);
-			
+			printf("ret:%d",ret);
 			if (!ret)
 				ret = completion(ctx, &scnt, 
 					      ctx->cq_s.cq_ex->wr_id,
