@@ -1260,7 +1260,9 @@ int main(int argc, char *argv[])
 						  servername,
 					      &ts);
 			else{
-				printf("something wrong state 2!\n");
+				printf("something wrong state 2 status:%d !\n",
+				ctx->cq_s.cq_ex->status
+				);
 				ibv_end_poll(ctx->cq_s.cq_ex);
 				return ret;
 			}
