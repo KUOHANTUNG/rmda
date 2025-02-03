@@ -769,7 +769,6 @@ static inline int completion(struct rc_context *ctx, int *scnt,
 			status, (int) wr_id);
 		return 1;
 	}
-	printf("123\n");
     switch ((int) wr_id){
         case SEND_WR_ID :
         	printf("SUCCESSFUL SEND DATA\n");
@@ -797,10 +796,12 @@ static inline int completion(struct rc_context *ctx, int *scnt,
             }
 
 			if(servername){
+
 				if(post_send(ctx,IBV_WR_RDMA_READ,
 					ctx->buf,ctx->size,
 					ctx->mr->lkey,READ_WR_ID)){
 					fprintf(stderr, "Couldn't post WRITE_WR\n");
+					printf("i am here\n");
 					return 1;
 				}
 			}
