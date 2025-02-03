@@ -1204,7 +1204,7 @@ int main(int argc, char *argv[])
 				return 1;
 			}
 	}
-	int w = 20;
+	int w = 2;
 	if(servername){
 		w = 4;
 	}
@@ -1261,27 +1261,27 @@ int main(int argc, char *argv[])
 						  servername,
 					      &ts);
 			/*client has to loop two times more for read/send*/
-			if(servername){
-				for(int i=0;i<2;i++){
-					if (ret) {
-						ibv_end_poll(ctx->cq_s.cq_ex);
-						return ret;
-					}
-					ret = ibv_next_poll(ctx->cq_s.cq_ex);
-					if (!ret)
-						ret = completion(ctx, &scnt, 
-							ctx->cq_s.cq_ex->wr_id,
-							ctx->cq_s.cq_ex->status,
-							ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
-							servername,
-							&ts);
-					else{
-						printf("something wrong state 3+%d!\n",i);
-						ibv_end_poll(ctx->cq_s.cq_ex);
-						return ret;
-					}
-				}
-			}
+			// if(servername){
+			// 	for(int i=0;i<2;i++){
+			// 		if (ret) {
+			// 			ibv_end_poll(ctx->cq_s.cq_ex);
+			// 			return ret;
+			// 		}
+			// 		ret = ibv_next_poll(ctx->cq_s.cq_ex);
+			// 		if (!ret)
+			// 			ret = completion(ctx, &scnt, 
+			// 				ctx->cq_s.cq_ex->wr_id,
+			// 				ctx->cq_s.cq_ex->status,
+			// 				ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
+			// 				servername,
+			// 				&ts);
+			// 		else{
+			// 			printf("something wrong state 3+%d!\n",i);
+			// 			ibv_end_poll(ctx->cq_s.cq_ex);
+			// 			return ret;
+			// 		}
+			// 	}
+			// }
 			ibv_end_poll(ctx->cq_s.cq_ex);
 			if (ret && ret != ENOENT) {
 				printf("something wrong end poll!\n");
