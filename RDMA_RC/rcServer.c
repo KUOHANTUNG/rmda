@@ -353,8 +353,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 					    int use_event)
 {
 	struct rc_context *ctx;
-	int access_flags_rm = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
-	int access_flags_send_recv = IBV_ACCESS_LOCAL_WRITE;
+	int access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
     ctx = (struct rc_context*)malloc(sizeof *ctx);
 	if (!ctx)
 		return NULL;
@@ -439,7 +438,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 				fprintf(stderr, "The device doesn't support implicit ODP\n");
 				goto clean_pd;
 			}
-			access_flags_rm |= IBV_ACCESS_ON_DEMAND;
+			access_flags |= IBV_ACCESS_ON_DEMAND;
 		}
 
 		if (use_ts) {
@@ -470,27 +469,27 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 				goto clean_pd;
 			}
 
-			access_flags_send_recv |= IBV_ACCESS_ZERO_BASED;
+			access_flags |= IBV_ACCESS_ZERO_BASED;
 		}
 	}
 	if(!use_dm){
-		ctx->msg_mr_send = ibv_reg_mr(ctx->pd, ctx->msg_buf_send, sizeof(struct message), access_flags_send_recv);
+		ctx->msg_mr_send = ibv_reg_mr(ctx->pd, ctx->msg_buf_send, sizeof(struct message), IBV_ACCESS_LOCAL_WRITE);
 		if (!ctx->msg_mr_send) {
 			fprintf(stderr, "Couldn't register msg_mr_send\n");
 			goto clean_dm;
 		}
-		ctx->msg_mr_recv = ibv_reg_mr(ctx->pd, ctx->msg_buf_recv, sizeof(struct message), access_flags_send_recv);
+		ctx->msg_mr_recv = ibv_reg_mr(ctx->pd, ctx->msg_buf_recv, sizeof(struct message), IBV_ACCESS_LOCAL_WRITE);
 		if (!ctx->msg_mr_recv) {
 			fprintf(stderr, "Couldn't register msg_mr_recv\n");
 			goto clean_msg_mr_send;
 		}
 	}else{
-		 ibv_reg_dm_mr(ctx->pd, ctx->dm, 0,	sizeof(struct message), access_flags_send_recv);
+		 ibv_reg_dm_mr(ctx->pd, ctx->dm, 0,	sizeof(struct message), access_flags);
 	}
 	if (implicit_odp) {
-		ctx->mr = ibv_reg_mr(ctx->pd, NULL, SIZE_MAX, access_flags_rm);
+		ctx->mr = ibv_reg_mr(ctx->pd, NULL, SIZE_MAX, access_flags);
 	}else
-		ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, size, access_flags_rm);
+		ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, size, access_flags);
 	if (!ctx->mr) {
 		fprintf(stderr, "Couldn't register mr_read_write\n");
 		goto clean_msg_mr_recv;
