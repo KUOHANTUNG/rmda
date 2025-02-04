@@ -352,8 +352,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 					    int use_event)
 {
 	struct rc_context *ctx;
-	int access_flags_read_write = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
-	int access_flags_send_recv = IBV_ACCESS_LOCAL_WRITE;
+	int access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
     ctx = (struct rc_context*)malloc(sizeof *ctx);
 	if (!ctx)
 		return NULL;
@@ -438,7 +437,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 				fprintf(stderr, "The device doesn't support implicit ODP\n");
 				goto clean_pd;
 			}
-			access_flags_read_write |= IBV_ACCESS_ON_DEMAND;
+			access_flags |= IBV_ACCESS_ON_DEMAND;
 		}
 
 		if (use_ts) {
@@ -457,48 +456,42 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 				goto clean_pd;
 			}
 
-			if (attrx.max_dm_size < 2*sizeof(struct message)) {
+			if (attrx.max_dm_size < size) {
 				fprintf(stderr, "Device memory is insufficient\n");
 				goto clean_pd;
 			}
 
-			dm_attr.length = 3*sizeof(struct message);
+			dm_attr.length = size;
 			ctx->dm = ibv_alloc_dm(ctx->context, &dm_attr);
 			if (!ctx->dm) {
 				fprintf(stderr, "Dev mem allocation failed\n");
 				goto clean_pd;
 			}
 
-			access_flags_read_write |= IBV_ACCESS_ZERO_BASED;
+			access_flags |= IBV_ACCESS_ZERO_BASED;
 		}
 	}
 	if (implicit_odp) {
-		ctx->mr = ibv_reg_mr(ctx->pd, NULL, SIZE_MAX, access_flags_read_write);
+		ctx->mr = ibv_reg_mr(ctx->pd, NULL, SIZE_MAX, access_flags);
 	}else
-		ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, size, access_flags_read_write);
+		ctx->mr = use_dm ? ibv_reg_dm_mr(ctx->pd, ctx->dm, 0,
+						 size, access_flags)
+		: ibv_reg_mr(ctx->pd, ctx->buf, size, access_flags);
 	if (!ctx->mr) {
 		fprintf(stderr, "Couldn't register mr_read_write\n");
-		goto clean_pd;
+		goto clean_dm;
 	}
-	/**non-use_dm choose the ordinary register */
-	if(!use_dm){
-		ctx->msg_mr_send = ibv_reg_mr(ctx->pd, ctx->msg_buf_send, sizeof(struct message), access_flags_send_recv);
-		ctx->msg_mr_recv = ibv_reg_mr(ctx->pd, ctx->msg_buf_recv, sizeof(struct message), access_flags_send_recv);
-
-	}else{
-		ctx->msg_mr_send = ibv_reg_dm_mr(ctx->pd, ctx->dm, 0, sizeof(struct message), access_flags_send_recv);
-		ctx->msg_mr_recv = ibv_reg_dm_mr(ctx->pd, ctx->dm, sizeof(struct message), sizeof(struct message), access_flags_send_recv);
-	}
-
+	ctx->msg_mr_send = ibv_reg_mr(ctx->pd, ctx->msg_buf_send, sizeof(struct message), IBV_ACCESS_LOCAL_WRITE);
 	if (!ctx->msg_mr_send) {
 		fprintf(stderr, "Couldn't register msg_mr_send\n");
 		goto clean_mr;
 	}
+	ctx->msg_mr_recv = ibv_reg_mr(ctx->pd, ctx->msg_buf_recv, sizeof(struct message), IBV_ACCESS_LOCAL_WRITE);
 	if (!ctx->msg_mr_recv) {
 		fprintf(stderr, "Couldn't register msg_mr_recv\n");
 		goto clean_msg_mr_send;
 	}
-	/**prefetch mode */
+
 	if (prefetch_mr) {
 		struct ibv_sge sg_list;
 		int ret;
@@ -597,6 +590,9 @@ clean_msg_mr_recv:
 	ibv_dereg_mr(ctx->msg_mr_recv);
 clean_mr:
 	ibv_dereg_mr(ctx->mr);
+clean_dm:
+	if (ctx->dm)
+		ibv_free_dm(ctx->dm);
 clean_pd:
 	ibv_dealloc_pd(ctx->pd);
 
@@ -689,7 +685,7 @@ static int post_recv(struct rc_context *ctx,
 
  /*RECV BUFFER*/
     struct ibv_sge list = {
-		.addr	= use_dm ? 0 : (uintptr_t) addr,
+		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
@@ -720,7 +716,7 @@ static int post_send(struct rc_context *ctx,
 		)
 {
 	struct ibv_sge list = {
-		.addr	= use_dm ? 0 : (uintptr_t) addr,
+		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
@@ -1169,13 +1165,6 @@ int main(int argc, char *argv[])
 		ctx->mr->addr
 		);
 		memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));
-		if (use_dm)
-			if (ibv_memcpy_to_dm(ctx->dm, 0, 
-			(void *)ctx->msg_buf_send, 
-			sizeof(struct message))) {
-				fprintf(stderr, "Copy to dm buffer failed\n");
-				return 1;
-			}
 		if (post_send(ctx,IBV_WR_SEND,
 			ctx->msg_buf_send,sizeof(struct message),
 			ctx->msg_mr_send->lkey,
@@ -1192,6 +1181,11 @@ int main(int argc, char *argv[])
 	}
 	if(!servername){
 		sprintf(ctx->buf,"server start_time:%lx",start.tv_sec);
+		if (use_dm)
+			if (ibv_memcpy_to_dm(ctx->dm, 0, (void *)ctx->buf, size)) {
+				fprintf(stderr, "Copy to dm buffer failed\n");
+				return 1;
+			}
 	}
 	int w = 2;
 	if(servername){
@@ -1296,11 +1290,6 @@ int main(int argc, char *argv[])
                     break;
                 case RECV_WR_ID :						
                     printf("RECEIVED DATA FROM REMOTE: %s\n", ctx->msg_buf_recv->txt);
-					if (use_dm)
-						if (ibv_memcpy_from_dm(ctx->msg_buf_recv, ctx->dm, sizeof(struct ibv_mr), sizeof(struct ibv_mr))) {
-							fprintf(stderr, "Copy from DM buffer failed\n");
-							return 1;
-						}
                     if(!scnt){
                         pid_t pid = getpid();
 						sprintf(ctx->msg_buf_send->txt,
@@ -1309,14 +1298,7 @@ int main(int argc, char *argv[])
 								ctx->mr->rkey,
 								ctx->mr->addr
 								);
-						memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));					
-						if (use_dm)
-							if (ibv_memcpy_to_dm(ctx->dm, 0, 
-								(void *)ctx->msg_buf_send, 
-								sizeof(struct message))) {
-								fprintf(stderr, "Copy to dm buffer failed\n");
-								return 1;
-							}
+						memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));
 						if (post_send(ctx, IBV_WR_SEND,
 							ctx->msg_buf_send,sizeof(struct message),
 							ctx->msg_mr_send->lkey,
@@ -1339,6 +1321,11 @@ int main(int argc, char *argv[])
 					}
                     break;
 					case READ_WR_ID:
+							if (use_dm)
+								if (ibv_memcpy_from_dm(ctx->buf, ctx->dm, 0, size)) {
+									fprintf(stderr, "Copy from DM buffer failed\n");
+									return 1;
+								}
 						printf("....the server buffer content:%s\n", ctx->buf);
 						sprintf(ctx->buf,"hello,server! i have change your data time: 0000\n");
 						if(post_send(ctx,IBV_WR_RDMA_WRITE,
@@ -1365,7 +1352,12 @@ int main(int argc, char *argv[])
 	if(!servername){
 
 		printf("current server buff:%s\n", ctx->buf);
-		sleep(1);//delay two minutes to wait client
+		sleep(1);//edlay two minutes to wait client
+		if (use_dm)
+				if (ibv_memcpy_from_dm(ctx->buf, ctx->dm, 0, size)) {
+					fprintf(stderr, "Copy from DM buffer failed\n");
+					return 1;
+				}
 		printf("....the server buffer content:%s\n", ctx->buf);
 	}  
 	if (use_ts && ts.comp_with_time_iters) {
