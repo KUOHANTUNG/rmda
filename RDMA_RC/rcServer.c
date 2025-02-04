@@ -685,7 +685,7 @@ static int post_recv(struct rc_context *ctx,
 
  /*RECV BUFFER*/
     struct ibv_sge list = {
-		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
+		.addr	= (uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
@@ -716,7 +716,7 @@ static int post_send(struct rc_context *ctx,
 		)
 {
 	struct ibv_sge list = {
-		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
+		.addr	= (uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
