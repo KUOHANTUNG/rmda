@@ -214,8 +214,7 @@ static struct rc_dest *client_exch_dest(const char *servername, int port,
 			sockfd = -1;
 		}
 	}
-	freeaddrinfo(res);
-	free(service);
+
     if (sockfd < 0) {
 		fprintf(stderr, "Couldn't connect to %s:%d\n", servername, port);
 		return NULL;
@@ -456,13 +455,13 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 				fprintf(stderr, "Device doesn't support dm allocation\n");
 				goto clean_pd;
 			}
-			/* the buffer in memory must be lager than message*/
-			if (attrx.max_dm_size < sizeof(struct message)) {
+
+			if (attrx.max_dm_size < size) {
 				fprintf(stderr, "Device memory is insufficient\n");
 				goto clean_pd;
 			}
 
-			dm_attr.length = sizeof(struct message);
+			dm_attr.length = size;
 			ctx->dm = ibv_alloc_dm(ctx->context, &dm_attr);
 			if (!ctx->dm) {
 				fprintf(stderr, "Dev mem allocation failed\n");
@@ -472,27 +471,25 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 			access_flags |= IBV_ACCESS_ZERO_BASED;
 		}
 	}
-	if(!use_dm){
-		ctx->msg_mr_send = ibv_reg_mr(ctx->pd, ctx->msg_buf_send, sizeof(struct message), IBV_ACCESS_LOCAL_WRITE);
-		if (!ctx->msg_mr_send) {
-			fprintf(stderr, "Couldn't register msg_mr_send\n");
-			goto clean_dm;
-		}
-		ctx->msg_mr_recv = ibv_reg_mr(ctx->pd, ctx->msg_buf_recv, sizeof(struct message), IBV_ACCESS_LOCAL_WRITE);
-		if (!ctx->msg_mr_recv) {
-			fprintf(stderr, "Couldn't register msg_mr_recv\n");
-			goto clean_msg_mr_send;
-		}
-	}else{
-		 ibv_reg_dm_mr(ctx->pd, ctx->dm, 0,	sizeof(struct message), access_flags);
-	}
 	if (implicit_odp) {
 		ctx->mr = ibv_reg_mr(ctx->pd, NULL, SIZE_MAX, access_flags);
 	}else
-		ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, size, access_flags);
+		ctx->mr = use_dm ? ibv_reg_dm_mr(ctx->pd, ctx->dm, 0,
+						 size, access_flags)
+		: ibv_reg_mr(ctx->pd, ctx->buf, size, access_flags);
 	if (!ctx->mr) {
 		fprintf(stderr, "Couldn't register mr_read_write\n");
-		goto clean_msg_mr_recv;
+		goto clean_pd;
+	}
+	ctx->msg_mr_send = ibv_reg_mr(ctx->pd, ctx->msg_buf_send, sizeof(struct message), IBV_ACCESS_LOCAL_WRITE);
+	if (!ctx->msg_mr_send) {
+		fprintf(stderr, "Couldn't register msg_mr_send\n");
+		goto clean_mr;
+	}
+	ctx->msg_mr_recv = ibv_reg_mr(ctx->pd, ctx->msg_buf_recv, sizeof(struct message), IBV_ACCESS_LOCAL_WRITE);
+	if (!ctx->msg_mr_recv) {
+		fprintf(stderr, "Couldn't register msg_mr_recv\n");
+		goto clean_msg_mr_send;
 	}
 
 	if (prefetch_mr) {
@@ -528,7 +525,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 
 	if (!cq(ctx)) {
 		fprintf(stderr, "Couldn't create CQ\n");
-		goto clean_mr;
+		goto clean_msg_mr_recv;
 	}
 	{
 		struct ibv_qp_attr attr;
@@ -546,34 +543,15 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 		
 		/**decrease the effect of mfence which is used to make sure sequence of queue */
 
-		if (use_new_send) {
-			struct ibv_qp_init_attr_ex init_attr_ex = {};
-
-			init_attr_ex.send_cq = cq(ctx);
-			init_attr_ex.recv_cq = cq(ctx);
-			init_attr_ex.cap.max_send_wr = 1;
-			init_attr_ex.cap.max_recv_wr = rx_depth;
-			init_attr_ex.cap.max_send_sge = 1;
-			init_attr_ex.cap.max_recv_sge = 1;
-			init_attr_ex.qp_type = IBV_QPT_RC;
-
-			init_attr_ex.comp_mask |= IBV_QP_INIT_ATTR_PD |
-						  IBV_QP_INIT_ATTR_SEND_OPS_FLAGS;
-			init_attr_ex.pd = ctx->pd;
-			init_attr_ex.send_ops_flags = IBV_QP_EX_WITH_SEND;
-
-			ctx->qp = ibv_create_qp_ex(ctx->context, &init_attr_ex);
-		} else {
 			ctx->qp = ibv_create_qp(ctx->pd, &init_attr);
-		}
 
 		if (!ctx->qp)  {
 			fprintf(stderr, "Couldn't create QP\n");
 			goto clean_cq;
 		}
 
-		if (use_new_send)
-			ctx->qpx = ibv_qp_to_qp_ex(ctx->qp);//it doesnot need  to translate again
+		// if (use_new_send)
+		// 	ctx->qpx = ibv_qp_to_qp_ex(ctx->qp);//it doesnot need  to translate again
 
 		ibv_query_qp(ctx->qp, &attr, IBV_QP_CAP, &init_attr);
 		if (init_attr.cap.max_inline_data >= size && !use_dm)
@@ -605,19 +583,13 @@ clean_qp:
 clean_cq:
 	ibv_destroy_cq(cq(ctx));
 
-clean_mr:
-	ibv_dereg_mr(ctx->mr);
-
-clean_msg_mr_recv:
-	ibv_dereg_mr(ctx->msg_mr_recv);
-
 clean_msg_mr_send:
 	ibv_dereg_mr(ctx->msg_mr_send);
 
-clean_dm:
-	if (ctx->dm)
-		ibv_free_dm(ctx->dm);
-
+clean_msg_mr_recv:
+	ibv_dereg_mr(ctx->msg_mr_recv);
+clean_mr:
+	ibv_dereg_mr(ctx->mr);
 clean_pd:
 	ibv_dealloc_pd(ctx->pd);
 
@@ -703,13 +675,14 @@ static int close_ctx(struct rc_context *ctx)
 
 static int post_recv(struct rc_context *ctx, 
 			int n,void *addr, 
+			int opcode,
 			uint32_t length, 
 			uint32_t key,
 			uint64_t id){
 
  /*RECV BUFFER*/
     struct ibv_sge list = {
-		.addr	= use_dm ? 0 :(uintptr_t) addr,
+		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
@@ -740,7 +713,7 @@ static int post_send(struct rc_context *ctx,
 		)
 {
 	struct ibv_sge list = {
-		.addr	= use_dm&&opcode==IBV_WR_SEND? 0 :(uintptr_t) addr,
+		.addr	= use_dm&&opcode!=IBV_WR_SEND?0:(uintptr_t) addr,
 		.length = length,
 		.lkey	= key
 	};
@@ -796,6 +769,7 @@ static inline int completion(struct rc_context *ctx, int *scnt,
 			status, (int) wr_id);
 		return 1;
 	}
+
     switch ((int) wr_id){
         case SEND_WR_ID :
         	printf("SUCCESSFUL SEND DATA\n");
@@ -823,7 +797,6 @@ static inline int completion(struct rc_context *ctx, int *scnt,
             }
 
 			if(servername){
-
 				if(post_send(ctx,IBV_WR_RDMA_READ,
 					ctx->buf,ctx->size,
 					ctx->mr->lkey,READ_WR_ID)){
@@ -1117,6 +1090,7 @@ int main(int argc, char *argv[])
     routs = post_recv(ctx,
 			ctx->rx_depth,
 			ctx->msg_buf_recv,
+			0,
 			sizeof(struct message),
 			ctx->msg_mr_recv->lkey,
 			RECV_WR_ID
@@ -1188,13 +1162,6 @@ int main(int argc, char *argv[])
 		ctx->mr->addr
 		);
 		memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));
-		if (use_dm)
-			if (ibv_memcpy_to_dm(ctx->dm, 0, 
-			(void *)ctx->msg_buf_send, 
-			sizeof(struct message))) {
-				fprintf(stderr, "Copy to dm buffer failed\n");
-				return 1;
-			}
 		if (post_send(ctx,IBV_WR_SEND,
 			ctx->msg_buf_send,sizeof(struct message),
 			ctx->msg_mr_send->lkey,
@@ -1211,6 +1178,11 @@ int main(int argc, char *argv[])
 	}
 	if(!servername){
 		sprintf(ctx->buf,"server start_time:%lx",start.tv_sec);
+		if (use_dm)
+			if (ibv_memcpy_to_dm(ctx->dm, 0, (void *)ctx->buf, size)) {
+				fprintf(stderr, "Copy to dm buffer failed\n");
+				return 1;
+			}
 	}
 	int w = 2;
 	if(servername){
@@ -1256,11 +1228,10 @@ int main(int argc, char *argv[])
 						  servername,
 					      &ts);
 			if (ret) {
-				printf("something wrong state %d!\n",ctx->cq_s.cq_ex->status);
 				ibv_end_poll(ctx->cq_s.cq_ex);
 				return ret;
 			}
-			ret = ibv_next_poll(ctx->cq_s.cq_ex);			
+			ret = ibv_next_poll(ctx->cq_s.cq_ex);
 			if (!ret)
 				ret = completion(ctx, &scnt, 
 					      ctx->cq_s.cq_ex->wr_id,
@@ -1269,125 +1240,105 @@ int main(int argc, char *argv[])
 						  servername,
 					      &ts);
 			/*client has to loop two times more for read/send*/
-			// if(servername){
-			// 	for(int i=0;i<2;i++){
-			// 		if (ret) {
-			// 			ibv_end_poll(ctx->cq_s.cq_ex);
-			// 			return ret;
-			// 		}
-			// 		ret = ibv_next_poll(ctx->cq_s.cq_ex);
-			// 		if (!ret)
-			// 			ret = completion(ctx, &scnt, 
-			// 				ctx->cq_s.cq_ex->wr_id,
-			// 				ctx->cq_s.cq_ex->status,
-			// 				ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
-			// 				servername,
-			// 				&ts);
-			// 		else{
-			// 			printf("something wrong state 3+%d!\n",i);
-			// 			ibv_end_poll(ctx->cq_s.cq_ex);
-			// 			return ret;
-			// 		}
-			// 	}
-			// }
+			if(servername){
+				for(int i=0;i<2;i++){
+					if (ret) {
+						ibv_end_poll(ctx->cq_s.cq_ex);
+						return ret;
+					}
+					ret = ibv_next_poll(ctx->cq_s.cq_ex);
+					if (!ret)
+					ret = completion(ctx, &scnt, 
+					      ctx->cq_s.cq_ex->wr_id,
+					      ctx->cq_s.cq_ex->status,
+					      ibv_wc_read_completion_ts(ctx->cq_s.cq_ex),
+						  servername,
+					      &ts);
+				}
+			}
 			ibv_end_poll(ctx->cq_s.cq_ex);
 			if (ret && ret != ENOENT) {
-				printf("something wrong end poll!\n");
 				fprintf(stderr, "poll CQ failed %d\n", ret);
 				return ret;
 			}
-		}else{
-        		struct ibv_wc wc[2];
-				int ne;
-				do {
-					ne = ibv_poll_cq(cq(ctx), 2, wc);
-					if (ne < 0) {
-						fprintf(stderr, "poll CQ failed %d\n", ne);
-						return 1;
-					}
-				} while (!use_event && ne < 1);
-				for(int i = 0; i < ne; i++){
+		}else
+    {
+        struct ibv_wc wc[2];
+		int ne;
+        do {
+			ne = ibv_poll_cq(cq(ctx), 2, wc);
+			if (ne < 0) {
+				fprintf(stderr, "poll CQ failed %d\n", ne);
+				return 1;
+			}
+		} while (!use_event && ne < 1);
+        for(int i = 0; i < ne; i++){
 
-					if (wc[i].status != IBV_WC_SUCCESS) {
-						fprintf(stderr, "Failed status %s (%d) for wr_id %d\n",
-						ibv_wc_status_str(wc[i].status),
-						wc[i].status, (int) wc[i].wr_id);
-						return 1;
-					}
+            if (wc[i].status != IBV_WC_SUCCESS) {
+				fprintf(stderr, "Failed status %s (%d) for wr_id %d\n",
+				ibv_wc_status_str(wc[i].status),
+				wc[i].status, (int) wc[i].wr_id);
+				return 1;
+			}
 
-					switch ((int) wc[i].wr_id){
-						case SEND_WR_ID :
-							printf("SUCCESSFUL SEND DATA\n");
-							break;
-						case RECV_WR_ID :						
-							printf("RECEIVED DATA FROM REMOTE: %s\n", ctx->msg_buf_recv->txt);
-							if (use_dm)
-								if (ibv_memcpy_from_dm(ctx->msg_buf_recv, 
-									ctx->dm, 
-									0, 
-									sizeof(struct message))) {
-									fprintf(stderr, "Copy from DM buffer failed\n");
-									return 1;
-								}
-							if(!scnt){
-								pid_t pid = getpid();
-								sprintf(ctx->msg_buf_send->txt,
-										"HELLO,I am server %d, my_remote_key: %d and mem_address: %p\n", 
-										pid, 
-										ctx->mr->rkey,
-										ctx->mr->addr
-										);
-								memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));
-								if (use_dm)
-									if (ibv_memcpy_to_dm(ctx->dm, 0, 
-										(void *)ctx->msg_buf_send, 
-										sizeof(struct message))) {
-										fprintf(stderr, "Copy to dm buffer failed\n");
-											return 1;
-									}
-								if (post_send(ctx, IBV_WR_SEND,
-									ctx->msg_buf_send,sizeof(struct message),
-									ctx->msg_mr_send->lkey,
-									SEND_WR_ID
-									)) {
-									fprintf(stderr, "Couldn't post send\n");
-									return 1;
-								}
-								scnt++;//client has sent  
-							}
-
-							if(servername){
-
-								if(post_send(ctx,IBV_WR_RDMA_READ,
-								ctx->buf,size,
-								ctx->mr->lkey,READ_WR_ID)){
-									fprintf(stderr, "Couldn't post WRITE_WR\n");
-									return 1;
-								}
-							}
-							break;
-							case READ_WR_ID:
-								printf("....the server buffer content:%s\n", ctx->buf);
-								sprintf(ctx->buf,"hello,server! i have change your data time: 0000\n");
-								if(post_send(ctx,IBV_WR_RDMA_WRITE,
-									ctx->buf,size,
-									ctx->mr->lkey,WRITE_WR_ID)){
-										fprintf(stderr, "Couldn't post WRITE_WR\n");
-										return 1;
-									}
-								break;
-							case WRITE_WR_ID:
-								printf("SUCCESSFUL CHANGE DATA\n");
-								break;
-						default:
-							fprintf(stderr, "Completion for unknown wr_id %d\n",
-							(int) wc[i].wr_id);
+            switch ((int) wc[i].wr_id){
+                case SEND_WR_ID :
+                    printf("SUCCESSFUL SEND DATA\n");
+                    break;
+                case RECV_WR_ID :						
+                    printf("RECEIVED DATA FROM REMOTE: %s\n", ctx->msg_buf_recv->txt);
+                    if(!scnt){
+                        pid_t pid = getpid();
+						sprintf(ctx->msg_buf_send->txt,
+								"HELLO,I am server %d, my_remote_key: %d and mem_address: %p\n", 
+								pid, 
+								ctx->mr->rkey,
+								ctx->mr->addr
+								);
+						memcpy(&ctx->msg_buf_send->mr,ctx->mr,sizeof(struct ibv_mr));
+						if (post_send(ctx, IBV_WR_SEND,
+							ctx->msg_buf_send,sizeof(struct message),
+							ctx->msg_mr_send->lkey,
+							SEND_WR_ID
+							)) {
+							fprintf(stderr, "Couldn't post send\n");
 							return 1;
-							break;
+						}
+                        scnt++;//client has sent  
+                    }
+
+					if(servername){
+
+						if(post_send(ctx,IBV_WR_RDMA_READ,
+						ctx->buf,size,
+						ctx->mr->lkey,READ_WR_ID)){
+							fprintf(stderr, "Couldn't post WRITE_WR\n");
+							return 1;
+						}
 					}
-				}
+                    break;
+					case READ_WR_ID:
+						printf("....the server buffer content:%s\n", ctx->buf);
+						sprintf(ctx->buf,"hello,server! i have change your data time: 0000\n");
+						if(post_send(ctx,IBV_WR_RDMA_WRITE,
+							ctx->buf,size,
+							ctx->mr->lkey,WRITE_WR_ID)){
+								fprintf(stderr, "Couldn't post WRITE_WR\n");
+								return 1;
+							}
+						break;
+					case WRITE_WR_ID:
+						printf("SUCCESSFUL CHANGE DATA\n");
+						break;
+                default:
+                    fprintf(stderr, "Completion for unknown wr_id %d\n",
+					(int) wc[i].wr_id);
+					return 1;
+                    break;
+            }
+        }
             
-    	}
+    }
 
 	}
 	if(!servername){
@@ -1395,6 +1346,10 @@ int main(int argc, char *argv[])
 		printf("current server buff:%s\n", ctx->buf);
 		sleep(2);//edlay two minutes to wait client
 		if (use_dm)
+				if (ibv_memcpy_from_dm(ctx->buf, ctx->dm, 0, size)) {
+					fprintf(stderr, "Copy from DM buffer failed\n");
+					return 1;
+				}
 		printf("....the server buffer content:%s\n", ctx->buf);
 	}  
 	if (use_ts && ts.comp_with_time_iters) {
