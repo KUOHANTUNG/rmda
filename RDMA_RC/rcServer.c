@@ -678,7 +678,6 @@ static int close_ctx(struct rc_context *ctx)
 
 static int post_recv(struct rc_context *ctx, 
 			int n,void *addr, 
-			int opcode,
 			uint32_t length, 
 			uint32_t key,
 			uint64_t id){
@@ -720,6 +719,9 @@ static int post_send(struct rc_context *ctx,
 		.length = length,
 		.lkey	= key
 	};
+	if(opcode != IBV_WR_SEND && use_dm){
+		list.addr = 0;
+	}
 	struct ibv_send_wr wr = {
 		.wr_id	    = id,
 		.sg_list    = &list,
