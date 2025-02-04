@@ -500,7 +500,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 
 		sg_list.lkey = ctx->msg_mr_send->lkey;
 		sg_list.addr = (uintptr_t)ctx->msg_buf_send;
-		sg_list.length = size;
+		sg_list.length = sizeof(struct message);
 
 		ret = ibv_advise_mr(ctx->pd, IBV_ADVISE_MR_ADVICE_PREFETCH_WRITE,
 				    IB_UVERBS_ADVISE_MR_FLAG_FLUSH,
