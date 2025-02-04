@@ -1329,6 +1329,11 @@ int main(int argc, char *argv[])
 								}
 						printf("....the server buffer content:%s\n", ctx->buf);
 						sprintf(ctx->buf,"hello,server! i have change your data time: 0000\n");
+							if (use_dm)
+								if (ibv_memcpy_to_dm(ctx->dm, 0, (void *)ctx->buf, size)) {
+								fprintf(stderr, "Copy to dm buffer failed\n");
+								return 1;
+							}
 						if(post_send(ctx,IBV_WR_RDMA_WRITE,
 							ctx->buf,size,
 							ctx->mr->lkey,WRITE_WR_ID)){
