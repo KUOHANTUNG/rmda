@@ -487,7 +487,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 
 	}else{
 		ctx->msg_mr_send = ibv_reg_dm_mr(ctx->pd, ctx->dm, 0, sizeof(struct message), access_flags_send_recv);
-		ctx->msg_mr_send = ibv_reg_dm_mr(ctx->pd, ctx->dm, sizeof(struct message), sizeof(struct message), access_flags_send_recv);
+		ctx->msg_mr_recv = ibv_reg_dm_mr(ctx->pd, ctx->dm, sizeof(struct message), sizeof(struct message), access_flags_send_recv);
 	}
 
 	if (!ctx->msg_mr_send) {
