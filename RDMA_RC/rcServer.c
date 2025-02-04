@@ -462,7 +462,7 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 				goto clean_pd;
 			}
 
-			dm_attr.length = 2*sizeof(struct message);
+			dm_attr.length = 3*sizeof(struct message);
 			ctx->dm = ibv_alloc_dm(ctx->context, &dm_attr);
 			if (!ctx->dm) {
 				fprintf(stderr, "Dev mem allocation failed\n");
