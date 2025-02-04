@@ -1095,7 +1095,6 @@ int main(int argc, char *argv[])
     routs = post_recv(ctx,
 			ctx->rx_depth,
 			ctx->msg_buf_recv,
-			0,
 			sizeof(struct message),
 			ctx->msg_mr_recv->lkey,
 			RECV_WR_ID
