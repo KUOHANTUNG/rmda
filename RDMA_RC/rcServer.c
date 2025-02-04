@@ -884,7 +884,6 @@ static void usage(const char *argv0)
 	printf("  -s, --size=<size>      size of message to exchange (default 4096)\n");
 	printf("  -m, --mtu=<size>       path MTU (default 1024)\n");
 	printf("  -r, --rx-depth=<dep>   number of receives to post at a time (default 500)\n");
-	printf("  -n, --iters=<iters>    number of exchanges (default 1000)\n");
 	printf("  -l, --sl=<sl>          service level value\n");
 	printf("  -e, --events           sleep on CQ events (default poll)\n");
 	printf("  -g, --gid-idx=<gid index> local port gid index\n");
@@ -892,7 +891,6 @@ static void usage(const char *argv0)
 	printf("  -O, --iodp		    use implicit on demand paging\n");
 	printf("  -P, --prefetch	    prefetch an ODP MR\n");
 	printf("  -t, --ts	            get CQE with timestamp\n");
-	printf("  -c, --chk	            validate received buffer\n");
 	printf("  -j, --dm	            use device memory\n");
 	printf("  -N, --new_send            use new post send WR API\n");
 	
@@ -935,7 +933,6 @@ int main(int argc, char *argv[])
 			{ .name = "size",     .has_arg = 1, .val = 's' },
 			{ .name = "mtu",      .has_arg = 1, .val = 'm' },
 			{ .name = "rx-depth", .has_arg = 1, .val = 'r' },
-			{ .name = "iters",    .has_arg = 1, .val = 'n' },
 			{ .name = "sl",       .has_arg = 1, .val = 'l' },
 			{ .name = "events",   .has_arg = 0, .val = 'e' },
 			{ .name = "gid-idx",  .has_arg = 1, .val = 'g' },
@@ -943,7 +940,6 @@ int main(int argc, char *argv[])
 			{ .name = "iodp",     .has_arg = 0, .val = 'O' },
 			{ .name = "prefetch", .has_arg = 0, .val = 'P' },
 			{ .name = "ts",       .has_arg = 0, .val = 't' },
-			{ .name = "chk",      .has_arg = 0, .val = 'c' },
 			{ .name = "dm",       .has_arg = 0, .val = 'j' },
 			{ .name = "new_send", .has_arg = 0, .val = 'N' },
 			{}
@@ -992,10 +988,6 @@ int main(int argc, char *argv[])
 			rx_depth = strtoul(optarg, NULL, 0);
 			break;
 
-		case 'n':
-			iters = strtoul(optarg, NULL, 0);
-			break;
-
 		case 'l':
 			sl = strtol(optarg, NULL, 0);
 			break;
@@ -1020,9 +1012,6 @@ int main(int argc, char *argv[])
 			break;
 		case 't':
 			use_ts = 1;
-			break;
-		case 'c':
-			validate_buf = 1;
 			break;
 
 		case 'j':
