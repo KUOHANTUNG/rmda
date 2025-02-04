@@ -485,7 +485,6 @@ static struct rc_context *init_ctx(struct ibv_device *ib_dev, int size,
 			goto clean_msg_mr_send;
 		}
 	}else{
-		printf("1\n");
 		 ibv_reg_dm_mr(ctx->pd, ctx->dm, 0,	sizeof(struct message), access_flags_send_recv);
 	}
 	if (implicit_odp) {
