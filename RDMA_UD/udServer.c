@@ -487,11 +487,6 @@ static int post_send(struct context *ctx,
 		wr.wr.rdma.remote_addr = (uintptr_t)ctx->mes_buf_recv->dt.mr.addr;
 		wr.wr.rdma.rkey = ctx->mes_buf_recv->dt.mr.rkey;
 	}
-	// if(!mode){
-	// 	wr.wr.ud.ah = ctx->ah;
-	// 	wr.wr.ud.remote_qpn  = qpn;
-	// 	wr.wr.ud.remote_qkey = 0x11111111;
-	// }
 	return ibv_post_send(ctx->qp, &wr, &bad_wr);
 }
 
@@ -574,72 +569,7 @@ static struct context *init_ctx(
 		fprintf(stderr, "Couldn't allocate PD\n");
 		goto clean_comp_channel;
 	}
-	// if((use_odp || use_dm)&&mode){
-	// 	const uint32_t rc_caps_mask = IBV_ODP_SUPPORT_SEND |
-	// 				      IBV_ODP_SUPPORT_RECV;
-	// 	struct ibv_device_attr_ex attrx;//query expanded function
-	// 	if (ibv_query_device_ex(ctx->context, NULL, &attrx)) {
-	// 		fprintf(stderr, "Couldn't query device for its features\n");
-	// 		goto clean_pd;
-	// 	}
-	// 	if (use_odp) {
-	// 		if (!(attrx.odp_caps.general_caps & IBV_ODP_SUPPORT) ||
-	// 		    (attrx.odp_caps.per_transport_caps.rc_odp_caps & rc_caps_mask) != rc_caps_mask) {
-	// 			fprintf(stderr, "The device isn't ODP capable or does not support RC send and receive with ODP\n");
-	// 			goto clean_pd;
-	// 		}
-	// 		if (implicit_odp &&
-	// 		    !(attrx.odp_caps.general_caps & IBV_ODP_SUPPORT_IMPLICIT)) {
-	// 			fprintf(stderr, "The device doesn't support implicit ODP\n");
-	// 			goto clean_pd;
-	// 		}
-	// 		access_flags |= IBV_ACCESS_ON_DEMAND;
-	// 	}
-	// 	if (use_dm) {
-	// 		struct ibv_alloc_dm_attr dm_attr = {};
-
-	// 		if (!attrx.max_dm_size) {
-	// 			fprintf(stderr, "Device doesn't support dm allocation\n");
-	// 			goto clean_pd;
-	// 		}
-
-	// 		if (attrx.max_dm_size < size) {
-	// 			fprintf(stderr, "Device memory is insufficient\n");
-	// 			goto clean_pd;
-	// 		}
-
-	// 		dm_attr.length = size;
-	// 		ctx->dm = ibv_alloc_dm(ctx->context, &dm_attr);
-	// 		if (!ctx->dm) {
-	// 			fprintf(stderr, "Dev mem allocation failed\n");
-	// 			goto clean_pd;
-	// 		}
-
-	// 		access_flags |= IBV_ACCESS_ZERO_BASED;//saving in device memory
-	// 	}
-	// }
-//    if (implicit_odp&&mode) {
-// 		ctx->mr_read_write = ibv_reg_mr(ctx->pd, NULL, SIZE_MAX, access_flags);
-// 	} else {
-		ctx->mr_read_write = ibv_reg_mr(ctx->pd, ctx->buf_read_write, size+40, access_flags);
-	// }
-
-	// if (prefetch_mr&&mode) {
-	// 	struct ibv_sge sg_list;
-	// 	int ret;
-
-	// 	sg_list.lkey = ctx->mr->lkey;
-	// 	sg_list.addr = (uintptr_t)ctx->buf_read_write;
-	// 	sg_list.length = size;
-	// 	/*memory area advice*/
-	// 	/*sychronize refresh */
-	// 	ret = ibv_advise_mr(ctx->pd, IBV_ADVISE_MR_ADVICE_PREFETCH_WRITE,
-	// 			    IB_UVERBS_ADVISE_MR_FLAG_FLUSH,
-	// 			    &sg_list, 1);
-
-	// 	if (ret)
-	// 		fprintf(stderr, "Couldn't prefetch MR(%d). Continue anyway\n", ret);
-	// }
+	ctx->mr_read_write = ibv_reg_mr(ctx->pd, ctx->buf_read_write, size+40, access_flags);
 	if (!ctx->mr_read_write) {
 		fprintf(stderr, "Couldn't register mr_read_write\n");
 		goto clean_pd;
@@ -704,22 +634,6 @@ static struct context *init_ctx(
 			fprintf(stderr, "Failed to modify QP to INIT\n");
 			goto clean_qp;
 		}
-		// }else{
-		// 	struct ibv_qp_attr attr_rc = {
-		// 	.qp_state        = IBV_QPS_INIT,
-		// 	.pkey_index      = 0,
-		// 	.port_num        =(uint8_t) port,
-		// 	.qp_access_flags = 0
-		// 	};
-		// 	if (ibv_modify_qp(ctx->qp, &attr_rc,
-		// 		  IBV_QP_STATE              |
-		// 		  IBV_QP_PKEY_INDEX         |
-		// 		  IBV_QP_PORT               |
-		// 		  IBV_QP_ACCESS_FLAGS)) {
-		// 	fprintf(stderr, "Failed to modify QP to INIT\n");
-		// 	goto clean_qp;
-		// 	}
-		// }
     }
         return ctx;
     clean_qp:
@@ -770,12 +684,6 @@ static void usage(const char *argv0)
     printf("  -l, --sl=<SL>          send messages with service level <SL> (default 0)\n");
 	printf("  -e, --events           sleep on CQ events (default poll)\n");
 	printf("  -g, --gid-idx=<gid index> local port gid index\n");
-	printf("  -c, --chk              validate received buffer\n");
-	printf("  -m, --rc				 reliable connection\n");
-	printf("  -j, --dm	            use device memory\n");
-	printf("  -o, --odp		    use on demand paging\n");
-	printf("  -P, --prefetch	    prefetch an ODP MR\n");
-	printf("  -O, --iodp		    use implicit on demand paging\n");
 }
 
 
@@ -815,16 +723,10 @@ int main(int argc, char* argv[]){
 			{ .name = "iters",    .has_arg = 1, .val = 'n' },
 			{ .name = "sl",       .has_arg = 1, .val = 'l' },
 			{ .name = "events",   .has_arg = 0, .val = 'e' },
-			{ .name = "gid-idx",  .has_arg = 1, .val = 'g' },
-			{ .name = "chk",      .has_arg = 0, .val = 'c' },
-			{ .name = "rc",	  .has_arg = 0, .val = 'm' },
-			{ .name = "dm",       .has_arg = 0, .val = 'j' },
-			{ .name = "odp",      .has_arg = 0, .val = 'o' },
-			{ .name = "iodp",     .has_arg = 0, .val = 'O' },
-			{ .name = "prefetch", .has_arg = 0, .val = 'P' },
+			{ .name = "gid-idx",  .has_arg = 1, .val = 'g' },  
 			{}
 		};
-        c = getopt_long(argc, argv, "p:d:i:s:r:n:l:eg:c:m", long_options,
+        c = getopt_long(argc, argv, "p:d:i:s:r:n:l:e:g", long_options,
 				NULL);
         
         if (c == -1)
@@ -875,24 +777,6 @@ int main(int argc, char* argv[]){
 			gidx = strtol(optarg, NULL, 0);
 			break;
 
-		case 'c':
-			validate_buf = 1;
-			break;
-		case 'm':
-			mode = 1;
-		case 'o':
-			use_odp = 1;
-			break;
-				case 'P':
-			prefetch_mr = 1;
-			break;
-		case 'O':
-			use_odp = 1;
-			implicit_odp = 1;
-			break;
-		case 'j':
-			use_dm = 1;
-			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -906,16 +790,6 @@ int main(int argc, char* argv[]){
 		return 1;
 	}
 
-
-	// if ((use_odp && use_dm)&&mode) {
-	// 	fprintf(stderr, "DM memory region can't be on demand\n");
-	// 	return 1;
-	// }
-
-	// if ((!use_odp && prefetch_mr)&&mode) {
-	// 	fprintf(stderr, "prefetch is valid only with on-demand memory region\n");
-	// 	return 1;
-	// }
     page_size = sysconf(_SC_PAGESIZE);//get system page size
 
     dev_list = ibv_get_device_list(NULL);
@@ -1029,9 +903,7 @@ int main(int argc, char* argv[]){
 		}
         scnt++;//client has sent
 	}
-	// if(!servername){
-	// 	sprintf(ctx->buf_read_write+40,"server start_time:%lx",start.tv_sec);
-	// }
+
 	for(int j =0; j<2;j++){
 		/*event driver*/
     if(use_event){
@@ -1097,29 +969,7 @@ int main(int argc, char* argv[]){
 						}
                         scnt++;//client has sent  
                     }
-					// if(servername){
-					// 	if(post_send(ctx,rem_dest->qpn,IBV_WR_RDMA_READ,
-					// 	ctx->buf_read_write+40,size,
-					// 	ctx->mr_read_write->lkey,READ_WR_ID)){
-					// 		fprintf(stderr, "Couldn't post WRITE_WR\n");
-					// 		return 1;
-					// 	}
-					// 	printf("I am here\n");
-					// }
                     break;
-				// case READ_WR_ID:
-				// 	printf("....the server buffer content:%s\n", ctx->buf_read_write+40);
-				// 	sprintf(ctx->buf_read_write+40,"hello,server! i have change your data time: 0000\n");
-				// 	if(post_send(ctx,rem_dest->qpn,IBV_WR_RDMA_WRITE,
-				// 		ctx->buf_read_write+40,size,
-				// 		ctx->mr_read_write->lkey,WRITE_WR_ID)){
-				// 			fprintf(stderr, "Couldn't post WRITE_WR\n");
-				// 			return 1;
-				// 		}
-				// 	break;
-				// case WRITE_WR_ID:
-				// 	printf("SUCCESSFUL CHANGE DATA\n");
-				// 	break;
                 default:
                     fprintf(stderr, "Completion for unknown wr_id %d\n",
 					(int) wc[i].wr_id);
@@ -1131,10 +981,6 @@ int main(int argc, char* argv[]){
     }
 
 	}
-	// if(!servername){
-	// 	sleep(2);//edlay two minutes to wait client
-	// 	printf("....the server buffer content:%s\n", ctx->buf_read_write+40);
-	// }  
     ibv_ack_cq_events(ctx->cq, num_cq_events);
     if (gettimeofday(&end, NULL)) {
 		perror("gettimeofday");
