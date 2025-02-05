@@ -14,12 +14,6 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 static int page_size;
-static int validate_buf;
-static int use_odp;
-static int implicit_odp;
-static int prefetch_mr;
-static int use_dm;
-static int	mode;
 enum{
     REVC_WR_ID = 1,
     SEND_WR_ID,
@@ -634,6 +628,7 @@ static struct context *init_ctx(
 			fprintf(stderr, "Failed to modify QP to INIT\n");
 			goto clean_qp;
 		}
+
     }
         return ctx;
     clean_qp:
@@ -723,10 +718,10 @@ int main(int argc, char* argv[]){
 			{ .name = "iters",    .has_arg = 1, .val = 'n' },
 			{ .name = "sl",       .has_arg = 1, .val = 'l' },
 			{ .name = "events",   .has_arg = 0, .val = 'e' },
-			{ .name = "gid-idx",  .has_arg = 1, .val = 'g' },  
+			{ .name = "gid-idx",  .has_arg = 1, .val = 'g' },
 			{}
 		};
-        c = getopt_long(argc, argv, "p:d:i:s:r:n:l:e:g", long_options,
+        c = getopt_long(argc, argv, "p:d:i:s:r:n:l:eg:c", long_options,
 				NULL);
         
         if (c == -1)
@@ -776,7 +771,6 @@ int main(int argc, char* argv[]){
 		case 'g':
 			gidx = strtol(optarg, NULL, 0);
 			break;
-
 		default:
 			usage(argv[0]);
 			return 1;
@@ -789,6 +783,7 @@ int main(int argc, char* argv[]){
 		usage(argv[0]);
 		return 1;
 	}
+
 
     page_size = sysconf(_SC_PAGESIZE);//get system page size
 
@@ -903,7 +898,6 @@ int main(int argc, char* argv[]){
 		}
         scnt++;//client has sent
 	}
-
 	for(int j =0; j<2;j++){
 		/*event driver*/
     if(use_event){
